@@ -54,7 +54,7 @@ async def ping_command(interaction: discord.Interaction):
 # Play command
 @bot.tree.command(name="play", description="Play a song")
 async def play_command(interaction: discord.Interaction, song_query: str):
-    await interaction.response.send_message(f"Playing {song_query} (Give it a few seconds to load the audio)")
+    await interaction.response.send_message(f"Loading: {song_query} (May take a few seconds)")
 
     # Connect to the user's voice channel
     voice_channel = interaction.user.voice.channel
@@ -99,6 +99,6 @@ async def play_command(interaction: discord.Interaction, song_query: str):
     # Play the audio
     source = discord.FFmpegPCMAudio(audio_url, **ffmpeg_options, executable="bin\\ffmpeg\\ffmpeg.exe")
     voice_client.play(source)
-
+    await interaction.followup.send(f"Now playing: {title}")
 
 bot.run(TOKEN)
