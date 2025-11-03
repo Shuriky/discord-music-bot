@@ -6,10 +6,13 @@ from discord import app_commands
 from dotenv import load_dotenv
 import yt_dlp
 import asyncio
+from collections import deque
 
 # Load environment variables from .env file
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
+
+SONG_QUEUES = {}
 
 # Handle yt_dlp search asynchronously
 async def search_ytdlp_async(query, ydl_options):
@@ -54,7 +57,7 @@ async def ping_command(interaction: discord.Interaction):
 # Play command
 @bot.tree.command(name="play", description="Play a song")
 async def play_command(interaction: discord.Interaction, song_query: str):
-    await interaction.response.send_message(f"Loading: {song_query} (May take a few seconds)")
+    await interaction.response.send_message(f"Loading: **{song_query}**")
 
     # Connect to the user's voice channel
     voice_channel = interaction.user.voice.channel
@@ -82,7 +85,6 @@ async def play_command(interaction: discord.Interaction, song_query: str):
     query = "ytsearch1: " + song_query
     result = await search_ytdlp_async(query, ydl_options)
     tracks = result.get('entries', [])
-
     if not tracks:
         await interaction.followup.send("No results found.")
         return
@@ -91,14 +93,55 @@ async def play_command(interaction: discord.Interaction, song_query: str):
     audio_url = first_track['url']
     title = first_track.get('title', 'Untitled')
 
-    ffmpeg_options = {
-        "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5", # Handle stream reconnections
-        "options": "-vn", # Audio options
-    }
+    # Check if the server has a queue ready, add one if not
+    guild_id = str(interaction.guild.id)
+    if SONG_QUEUES.get(guild_id) is None:
+        SONG_QUEUES[guild_id] = deque()
 
-    # Play the audio
-    source = discord.FFmpegPCMAudio(audio_url, **ffmpeg_options, executable="bin\\ffmpeg\\ffmpeg.exe")
-    voice_client.play(source)
-    await interaction.followup.send(f"Now playing: {title}")
+    SONG_QUEUES[guild_id].append((audio_url, title))
+
+    # If something is already playing, just add to the queue
+    if voice_client.is_playing() or voice_client.is_paused():
+        await interaction.followup.send(f"Added to queue: **{title}**")
+    # Else play immediately
+    else:
+        await interaction.followup.send(f"Now playing: **{title}**")
+        await play_next_song(voice_client, guild_id, voice_channel)
+
+# Skip command
+@bot.tree.command(name="skip", description="Skip the current song")
+async def skip_command(interaction: discord.Interaction):
+    if interaction.guild.voice_client and (interaction.guild.voice_client.is_playing() or interaction.guild.voice_client.is_paused()):
+        interaction.guild.voice_client.stop()
+        await interaction.response.send_message("Skipped the current song.")
+    else:
+        await interaction.response.send_message("No song is currently playing.")
+
+# Play next song in the queue
+async def play_next_song(voice_client, guild_id, channel):
+    if SONG_QUEUES[guild_id]:
+        audio_url, title = SONG_QUEUES[guild_id].popleft()
+
+        ffmpeg_options = {
+            "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5", # Handle stream reconnections
+            "options": "-vn", # Audio options
+        }
+
+        source = discord.FFmpegPCMAudio(audio_url, **ffmpeg_options, executable="bin\\ffmpeg\\ffmpeg.exe")
+        
+        # Callback to play the next song after the current one ends
+        def after_play(error):
+            if error:
+                print(f"Error playing {title}: {error}")
+            asyncio.run_coroutine_threadsafe(play_next_song(voice_client, guild_id, channel), bot.loop)
+
+        voice_client.play(source, after=after_play)
+        await channel.send(f"Now playing: **{title}**")
+    
+    # If the queue is empty, disconnect
+    else:
+        await voice_client.disconnect()
+        SONG_QUEUES[guild_id] = deque()
+        await channel.send("Queue is empty. Disconnected from the voice channel.")
 
 bot.run(TOKEN)
