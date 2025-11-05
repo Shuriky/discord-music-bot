@@ -13,6 +13,7 @@ load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 
 SONG_QUEUES = {}
+CURRENTLY_PLAYING = {}  # Track what's currently playing in each guild
 
 # Handle yt_dlp search asynchronously
 async def search_ytdlp_async(query, ydl_options):
@@ -144,10 +145,12 @@ async def stop(interaction: discord.Interaction):
         await interaction.response.send_message("I'm not connected to any voice channel.")
         return
 
-    # Clear the guild's queue
+    # Clear the guild's queue and currently playing song
     guild_id_str = str(interaction.guild_id)
     if guild_id_str in SONG_QUEUES:
         SONG_QUEUES[guild_id_str].clear()
+    if guild_id_str in CURRENTLY_PLAYING:
+        del CURRENTLY_PLAYING[guild_id_str]
 
     # If something is playing or paused, stop it
     if voice_client.is_playing() or voice_client.is_paused():
@@ -173,6 +176,45 @@ async def resume(interaction: discord.Interaction):
     # Resume playback
     voice_client.resume()
     await interaction.response.send_message("Playback resumed!")
+
+# View queue command
+@bot.tree.command(name="view_queue", description="View all songs currently in the queue.")
+async def view_queue(interaction: discord.Interaction):
+    guild_id_str = str(interaction.guild_id)
+    voice_client = interaction.guild.voice_client
+    
+    # Create the queue message
+    queue_message = "**Music Queue:**\n\n"
+    
+    # Show currently playing song
+    if voice_client and voice_client.is_playing() and guild_id_str in CURRENTLY_PLAYING:
+        current_song = CURRENTLY_PLAYING[guild_id_str]
+        queue_message += f"**Now Playing:** {current_song}\n\n"
+    elif voice_client and voice_client.is_paused() and guild_id_str in CURRENTLY_PLAYING:
+        current_song = CURRENTLY_PLAYING[guild_id_str]
+        queue_message += f"**Paused:** {current_song}\n\n"
+    else:
+        queue_message += "**Nothing currently playing**\n\n"
+    
+    # Check if there's a queue for this guild
+    if guild_id_str not in SONG_QUEUES or len(SONG_QUEUES[guild_id_str]) == 0:
+        queue_message += "**Queue is empty**"
+        return await interaction.response.send_message(queue_message)
+    
+    # Get the queue
+    queue = SONG_QUEUES[guild_id_str]
+    queue_message += f"**Up Next:** ({len(queue)} songs)\n"
+    
+    # Add each song to the message with numbering
+    for i, (video_url, title) in enumerate(queue, 1):
+        queue_message += f"{i}. {title}\n"
+        
+        # Discord has a 2000 character limit, so check if we're getting close
+        if len(queue_message) > 1800:
+            queue_message += f"... and {len(queue) - i} more songs"
+            break
+    
+    await interaction.response.send_message(queue_message)
 
 # Play next song in the queue
 async def play_next_song(voice_client, guild_id, channel):
@@ -217,6 +259,10 @@ async def play_next_song(voice_client, guild_id, channel):
                 asyncio.run_coroutine_threadsafe(play_next_song(voice_client, guild_id, channel), bot.loop)
 
             voice_client.play(source, after=after_play)
+            
+            # Track the currently playing song
+            CURRENTLY_PLAYING[guild_id] = title
+            
             await channel.send(f"Now playing: **{title}**")
             
         except Exception as e:
@@ -226,6 +272,10 @@ async def play_next_song(voice_client, guild_id, channel):
     
     # If the queue is empty, disconnect
     else:
+        # Clear currently playing song since nothing is playing
+        if guild_id in CURRENTLY_PLAYING:
+            del CURRENTLY_PLAYING[guild_id]
+            
         await voice_client.disconnect()
         SONG_QUEUES[guild_id] = deque()
         await channel.send("Queue is empty. Disconnected from the voice channel.")
