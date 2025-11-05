@@ -230,7 +230,117 @@ async def play_next_song(voice_client, guild_id, channel):
         SONG_QUEUES[guild_id] = deque()
         await channel.send("Queue is empty. Disconnected from the voice channel.")
 
+# Play entire playlist
+@bot.tree.command(name="playlist", description="Play an entire playlist.")
+async def playlist(interaction: discord.Interaction, playlist_url: str):
+    voice_client = interaction.guild.voice_client
 
+    # Connect to the user's voice channel
+    voice_channel = interaction.user.voice.channel
+
+    if voice_channel is None:
+        await interaction.followup.send("You are not connected to a voice channel.")
+        return
+    
+    voice_client = interaction.guild.voice_client
+
+    if voice_client is None:
+        voice_client = await voice_channel.connect()
+    elif voice_channel != voice_client.channel:
+        await voice_client.move_to(voice_channel)
+
+    # Fetch the playlist and add all songs to the queue
+    await interaction.response.send_message(f"Fetching playlist... This may take a moment.")
+    
+    playlist = await fetch_playlist(playlist_url)
+    if not playlist:
+        return await interaction.followup.send("Could not fetch the playlist. Make sure it's a valid YouTube playlist URL.")
+
+    # Initialize the queue for this guild if it doesn't exist
+    guild_id_str = str(interaction.guild_id)
+    if guild_id_str not in SONG_QUEUES:
+        SONG_QUEUES[guild_id_str] = deque()
+
+    for song in playlist:
+        SONG_QUEUES[guild_id_str].append(song)
+
+    # If nothing is playing, start the first song
+    if not voice_client.is_playing() and not voice_client.is_paused():
+        await play_next_song(voice_client, str(interaction.guild_id), interaction.channel)
+
+    await interaction.followup.send(f"Added **{len(playlist)}** songs to the queue.")
+
+# Fetch playlist songs
+async def fetch_playlist(playlist_url):
+    # Extract playlist ID from URL if it's in watch format
+    if "list=" in playlist_url:
+        import re
+        match = re.search(r'list=([^&]+)', playlist_url)
+        if match:
+            playlist_id = match.group(1)
+            # Convert to proper playlist URL format
+            playlist_url = f"https://www.youtube.com/playlist?list={playlist_id}"
+            print(f"Converted URL to: {playlist_url}")
+    
+    ydl_options = {
+        "extract_flat": True,  # Don't download, just get metadata
+        "quiet": False,  # Enable logging to see what's happening
+        "no_warnings": False,
+    }
+
+    try:
+        print(f"Attempting to fetch playlist: {playlist_url}")
+        
+        # First, get the playlist entries
+        result = await search_ytdlp_async(playlist_url, ydl_options)
+        
+        print(f"yt-dlp result keys: {list(result.keys()) if result else 'None'}")
+        
+        if not result:
+            print("No result returned from yt-dlp")
+            return []
+        
+        # Check for different possible keys
+        entries = None
+        if 'entries' in result:
+            entries = result['entries']
+        elif '_type' in result and result['_type'] == 'playlist':
+            entries = result.get('entries', [])
+        
+        if not entries:
+            print(f"No entries found. Available keys: {list(result.keys())}")
+            print(f"Result type: {result.get('_type', 'unknown')}")
+            return []
+            
+        print(f"Found {len(entries)} songs in playlist")
+        
+        songs = []
+        # For each entry, we need to extract the full info to get the stream URL
+        for i, entry in enumerate(entries):  # Process all entries in the playlist
+            if not entry:
+                print(f"Entry {i} is None, skipping")
+                continue
+                
+            print(f"Processing entry {i}: {entry.get('id', 'no-id')} - {entry.get('title', 'no-title')}")
+            
+            if 'id' not in entry:
+                print(f"Entry {i} has no ID, skipping")
+                continue
+                
+            video_url = f"https://www.youtube.com/watch?v={entry['id']}"
+            title = entry.get('title', f'Video {entry["id"]}')
+            
+            # Store just the video URL and title, we'll extract stream URL when playing
+            songs.append((video_url, title))
+            print(f"Added song: {title}")
+        
+        return songs
+        
+    except Exception as e:
+        print(f"Error fetching playlist: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
 
 # Run the bot
 bot.run(TOKEN)
