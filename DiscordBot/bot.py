@@ -47,6 +47,7 @@ async def on_message(message):
         return
     # Remove Discord mentions
     content_without_mentions = re.sub(r'<@!?\d+>', '', message.content)
+    
     if '67' in content_without_mentions:
         await message.channel.send('https://tenor.com/view/bosnov-67-bosnov-67-67-meme-gif-16727368109953357722')
 
@@ -54,6 +55,48 @@ async def on_message(message):
 @bot.tree.command(name="ping", description="Says pong!")
 async def ping_command(interaction: discord.Interaction):
     await interaction.response.send_message("Pong!")
+
+# Send a message to a selected text channel
+@bot.tree.command(name="send_message", description="Send a message to a text channel")
+@app_commands.guild_only()
+@app_commands.describe(
+    frequency="send message once every [input] seconds",
+    channel="text channel to send the message into",
+    message="message to sent",
+    times="number of times the message will be sent",
+)
+async def send_message_command(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+    message: str,
+    frequency: app_commands.Range[int, 1] = 1,
+    times: app_commands.Range[int, 1, 99] = 1,
+):
+    if not channel.permissions_for(interaction.user).send_messages:
+        await interaction.response.send_message(
+            "You do not have permission to send messages in that channel.",
+            ephemeral=True,
+        )
+        return
+
+    bot_member = interaction.guild.me
+    if not channel.permissions_for(bot_member).send_messages:
+        await interaction.response.send_message(
+            "I do not have permission to send messages in that channel.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    for index in range(times):
+        await channel.send(message)
+        if index < times - 1:
+            await asyncio.sleep(frequency)
+
+    await interaction.followup.send(
+        f"Message sent {times} times to {channel.mention}, every {frequency} seconds.",
+        ephemeral=True,
+    )
 
 # Play command
 @bot.tree.command(name="play", description="Play a song")
@@ -324,7 +367,6 @@ async def playlist(interaction: discord.Interaction, playlist_url: str):
 async def fetch_playlist(playlist_url):
     # Extract playlist ID from URL if it's in watch format
     if "list=" in playlist_url:
-        import re
         match = re.search(r'list=([^&]+)', playlist_url)
         if match:
             playlist_id = match.group(1)
