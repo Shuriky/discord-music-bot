@@ -1,4 +1,5 @@
 import os
+import functools
 import discord
 import re
 from discord.ext import commands
@@ -14,6 +15,33 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 
 SONG_QUEUES = {}
 CURRENTLY_PLAYING = {}  # Track what's currently playing in each guild
+ACTIVE_COMMANDS = {}
+
+
+def track_running_command(command):
+    @functools.wraps(command)
+    async def tracked_command(interaction, *args, **kwargs):
+        guild_id = str(interaction.guild_id)
+        task = asyncio.current_task()
+        tasks = ACTIVE_COMMANDS.setdefault(guild_id, set())
+        tasks.add(task)
+
+        try:
+            return await command(interaction, *args, **kwargs)
+        except asyncio.CancelledError:
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send("This command was terminated.", ephemeral=True)
+                else:
+                    await interaction.response.send_message("This command was terminated.", ephemeral=True)
+            except discord.HTTPException:
+                pass
+        finally:
+            tasks.discard(task)
+            if not tasks:
+                ACTIVE_COMMANDS.pop(guild_id, None)
+
+    return tracked_command
 
 # Handle yt_dlp search asynchronously
 async def search_ytdlp_async(query, ydl_options):
@@ -65,6 +93,7 @@ async def ping_command(interaction: discord.Interaction):
     message="message to sent",
     times="number of times the message will be sent",
 )
+@track_running_command
 async def send_message_command(
     interaction: discord.Interaction,
     channel: discord.TextChannel,
@@ -100,6 +129,7 @@ async def send_message_command(
 
 # Play command
 @bot.tree.command(name="play", description="Play a song")
+@track_running_command
 async def play_command(interaction: discord.Interaction, song_query: str):
     await interaction.response.send_message(f"Loading: **{song_query}**")
 
@@ -202,6 +232,35 @@ async def stop(interaction: discord.Interaction):
     # Disconnect from the channel
     await interaction.response.send_message("Stopped playback and disconnected!")
     await voice_client.disconnect()
+
+# Terminate active commands and playback
+@bot.tree.command(name="terminate", description="stop current action")
+@app_commands.guild_only()
+async def terminate_command(interaction: discord.Interaction):
+    guild_id = str(interaction.guild_id)
+    tasks = ACTIVE_COMMANDS.get(guild_id, set()).copy()
+    voice_client = interaction.guild.voice_client
+    has_active_action = bool(tasks) or bool(SONG_QUEUES.get(guild_id)) or bool(voice_client and voice_client.is_connected())
+
+    await interaction.response.defer(ephemeral=True)
+
+    if guild_id in SONG_QUEUES:
+        SONG_QUEUES[guild_id].clear()
+    CURRENTLY_PLAYING.pop(guild_id, None)
+
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    voice_client = interaction.guild.voice_client
+    if voice_client and voice_client.is_connected():
+        if voice_client.is_playing() or voice_client.is_paused():
+            voice_client.stop()
+        await voice_client.disconnect()
+
+    response = "Terminated the current action." if has_active_action else "There is no active action to terminate."
+    await interaction.followup.send(response, ephemeral=True)
 
 # Resume command
 @bot.tree.command(name="resume", description="Resume the currently paused song.")
@@ -325,6 +384,7 @@ async def play_next_song(voice_client, guild_id, channel):
 
 # Play entire playlist
 @bot.tree.command(name="playlist", description="Play an entire playlist.")
+@track_running_command
 async def playlist(interaction: discord.Interaction, playlist_url: str):
     voice_client = interaction.guild.voice_client
 
